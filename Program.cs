@@ -46,7 +46,7 @@ unsafe (string? FrontTrail, string? BackTrail) ProcessMmfChunk(long offset, long
     
     string? frontTrail = null;
 
-    Span<char> currentLine = stackalloc char[64];
+    Span<char> currentLine = stackalloc char[48];
     var lineIndex = 0;
     for (var i = 0; i < chunkSpan.Length; i++)
     {
@@ -90,11 +90,11 @@ unsafe void ParseLine(ReadOnlySpan<char> lineSpan)
         return;
     }
     
-    var city = lineSpan[res[0]].ToString();
+    var citySpan = lineSpan[res[0]].ToString();
 
-    var temp = decimal.Parse(lineSpan[res[1]], CultureInfo.InvariantCulture.NumberFormat);
+    var temp = double.Parse(lineSpan[res[1]], CultureInfo.InvariantCulture.NumberFormat);
 
-    if (!dict.TryGetValue(city, out var minmax))
+    if (!dict.TryGetValue(citySpan, out var minmax))
     {
         minmax = new TempSet()
         {
@@ -102,12 +102,12 @@ unsafe void ParseLine(ReadOnlySpan<char> lineSpan)
             Min = temp,
             Count = 1
         };
-        dict[city] = minmax;
+        dict[citySpan] = minmax;
         return;
     }
 
     minmax.Count++;
-    minmax.Sum += temp;
+    minmax.Sum += (decimal)temp;
 
     if (temp < minmax.Min)
     {
@@ -117,15 +117,13 @@ unsafe void ParseLine(ReadOnlySpan<char> lineSpan)
     {
         minmax.Max = temp;
     }
-
-    return;
 }
 
 class TempSet
 {
-    public decimal Min { get; set; }
+    public double Min { get; set; }
     
-    public decimal Max { get; set; }
+    public double Max { get; set; }
     
     public int Count { get; set; }
     
