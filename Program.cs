@@ -1,44 +1,95 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO.MemoryMappedFiles;
+
+const string inputFilePath = @"D:\Coding\OpenSource\1brc\data\measurements.txt";
+const int memoryChunkSize = 64;
 
 var sw = Stopwatch.StartNew();
-const string inputFilePath = @"D:\Coding\OpenSource\1brc\data\measurements.txt";
-
 var dict = new ConcurrentDictionary<string, TempSet>();
 
-var index = 0;
-var step = 0;
+using var fh = File.OpenHandle(inputFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.None);
+var fileLength = RandomAccess.GetLength(fh);
+var chunkLength = fileLength / memoryChunkSize;
+using var mmf = MemoryMappedFile.CreateFromFile(fh, null, 0, MemoryMappedFileAccess.Read, HandleInheritability.None, true);
 
-const int chunkSize = 10_000_000;
+var trails = Enumerable.Range(0, memoryChunkSize)
+    .AsParallel()
+    .Select(chunkIndex =>
+    {
+        var offset = chunkIndex * fileLength / memoryChunkSize;
+        
+        return (chunkIndex, ProcessMmfChunk(offset - (chunkIndex > 0 ? chunkIndex - 1 : 0), chunkLength, mmf));
+    })
+    .OrderBy(x => x.chunkIndex)
+    .ToArray();
 
-var chunk = new string[chunkSize];
-foreach (var line in File.ReadLines(inputFilePath))
+for (var i = 1; i < trails.Length; ++i)
 {
-    chunk[index % chunkSize] = line;
-    index++;
-
-    if (index % chunkSize == 0)
-    {
-        chunk
-            .AsParallel()
-            .ForAll(x => RunLoop(x.AsSpan()));
-    }
-
-    if (index % 10_000_000 == 0)
-    {
-        step++;
-        Console.WriteLine($"{step}% done");
-    }
+    var combinedSection = trails[i - 1].Item2.BackTrail?.Trim('\0') + trails[i].Item2.FrontTrail?.Trim('\0');
+    ParseLine(combinedSection);
 }
+
 sw.Stop();
 Console.WriteLine(sw.Elapsed);
 return;
 
-unsafe void RunLoop(ReadOnlySpan<char> lineSpan)
+unsafe (string? FrontTrail, string? BackTrail) ProcessMmfChunk(long offset, long length, MemoryMappedFile mmfChunk)
+{
+    using var fileChunk = mmfChunk.CreateViewAccessor(offset, length, MemoryMappedFileAccess.Read);
+
+    byte* ptr = null;
+    fileChunk.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+
+    var chunkSpan = new ReadOnlySpan<byte>(ptr + fileChunk.PointerOffset, (int)length);
+    
+    string? frontTrail = null;
+
+    Span<char> currentLine = stackalloc char[64];
+    var lineIndex = 0;
+    for (var i = 0; i < chunkSpan.Length; i++)
+    {
+        var t = chunkSpan[i];
+        var currentChar = (char) t;
+
+        if (currentChar == '\n')
+        {
+            if (i - lineIndex == 0)
+            {
+                frontTrail = new string(currentLine).Trim();
+            }
+            else
+            {
+                ParseLine(currentLine);
+            }
+            lineIndex = 0;
+            currentLine.Clear();
+            continue;
+        }
+
+        currentLine[lineIndex] = currentChar;
+        lineIndex++;
+    }
+    
+    var backTrail = new string(currentLine).Trim();
+    backTrail = backTrail == "" ? null : backTrail;
+
+    fileChunk.SafeMemoryMappedViewHandle.ReleasePointer();
+
+    return (frontTrail, backTrail);
+}
+
+unsafe void ParseLine(ReadOnlySpan<char> lineSpan)
 {
     Span<Range> res = stackalloc Range[2];
-    lineSpan.Split(res, ';');
+    var splitCount = lineSpan.Split(res, ';');
+
+    if (splitCount != 2)
+    {
+        return;
+    }
+    
     var city = lineSpan[res[0]].ToString();
 
     var temp = decimal.Parse(lineSpan[res[1]], CultureInfo.InvariantCulture.NumberFormat);
@@ -66,6 +117,8 @@ unsafe void RunLoop(ReadOnlySpan<char> lineSpan)
     {
         minmax.Max = temp;
     }
+
+    return;
 }
 
 class TempSet
